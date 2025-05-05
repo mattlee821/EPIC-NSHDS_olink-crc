@@ -2,7 +2,6 @@
 
 This project investigates the association between proteins measured using the Olink platform and colorectal cancer in the European Prospective Investigation into Cancer and Nutrition study (EPIC) and the Northern Sweden Health and Disease Study (NSHDS)
 
-
 ---
 
 # To do
@@ -30,6 +29,22 @@ This project is organised into the following directories:
     - `000_funcistion.R` contains all custom functions used
 - `analysis/`
     - contains the output from `src/` in directories of the same name
+
+You can make the directory structure by copying the file `directory-structure.txt` and running the below code:
+```
+# Recreate the directory structure in target_dir
+directories <- data.table::fread("directory-structure.txt")
+target_dir <- "EPIC-NSHDS_olink-crc/"
+# Ensure target directory exists
+if (!dir.exists(target_dir)) {
+  dir.create(target_dir, recursive = TRUE)
+}
+# Recreate the directory structure under target_dir
+for (i in directories$dir) {
+  new_path <- file.path(target_dir, i)
+  dir.create(new_path, recursive = TRUE, showWarnings = FALSE)
+}
+```
 
 - TBC
     - `code_review/` – Helps a "code buddy" reproduce manuscripts, presentations, and reports.
