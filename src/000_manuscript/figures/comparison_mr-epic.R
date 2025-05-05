@@ -2,12 +2,6 @@ rm(list=ls())
 set.seed(821)
 
 # environment ====
-library(dplyr)
-library(openxlsx)
-library(data.table)
-library(stringr)
-library(tidyr)
-palette <- palette()
 
 # epic-mr-colocalisation ====
 # data_epic ====

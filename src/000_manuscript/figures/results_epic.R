@@ -2,25 +2,6 @@ rm(list=ls())
 set.seed(821)
 
 # environment ====
-library(functions)
-library(ggplot2)
-library(wesanderson)
-library(dplyr)
-library(cowplot)
-library(data.table)
-library(ggrepel)
-library(tidyr)
-library(data.table)
-library(dplyr)
-library(tidyr)
-library(pathfindR)
-library(cowplot)
-library(grid)
-library(UpSetR)
-library(ggplot2)
-
-# source ====
-palette <- palette()
 
 # figure 1: volcano plot all ====
 ## data

@@ -850,3 +850,287 @@ models <- list(
   }
 )
 
+#' Analyze Data with Multiple Models: allwos for interaction term
+#'
+#' This function iterates through a list of datasets, applies a set of statistical models,
+#' and extracts and returns the results in a data frame.
+#'
+#' @param data_list A list of data frames, where each data frame represents a dataset to be analyzed.
+#' @param models_heterogeneity A list of functions, where each function represents a statistical model to be applied.
+#' @param covariates (Optional) A character string specifying the names of covariates to be used in 'model_2'.
+#'                     If NULL, a default set of covariates is used.
+#'                     Defaults to NULL.
+#'
+#' @return A data frame containing the extracted results from each model applied to each dataset.
+#'         The columns include:
+#'         \itemize{
+#'           \item \code{exposure}: The name of the exposure variable.
+#'           \item \code{outcome}: The outcome variable (extracted from the dataset name).
+#'           \item \code{sex}: Sex information (extracted from the dataset name).
+#'           \item \code{model}: The name of the model applied.
+#'           \item \code{followup}: Follow-up information (extracted from the dataset name).
+#'           \item \code{n}: Number of observations.
+#'           \item \code{nevent}: Number of events (if applicable).
+#'           \item \code{coef}: Coefficient estimate for the exposure variable.
+#'           \item \code{coef_exp}: Exponentiated coefficient estimate (e.g., odds ratio, hazard ratio).
+#'           \item \code{se}: Standard error of the coefficient.
+#'           \item \code{ci_lower_exp}: Lower confidence interval for the exponentiated coefficient.
+#'           \item \code{ci_upper_exp}: Upper confidence interval for the exponentiated coefficient.
+#'           \item \code{se_robust}: Robust standard error of the coefficient (if available).
+#'           \item \code{pval}: P-value for the coefficient.
+#'           \item \code{degrees_freedom}: Degrees of freedom for the model test.
+#'           \item \code{concordance}: Concordance statistic (if applicable).
+#'           \item \code{concordance_se}: Standard error of the concordance statistic.
+#'           \item \code{likelihood_ratio_test}: Likelihood ratio test statistic.
+#'           \item \code{likelihood_ratio_test_pval}: P-value for the likelihood ratio test.
+#'           \item \code{wald_test}: Wald test statistic.
+#'           \item \code{wald_test_pval}: P-value for the Wald test.
+#'           \item \code{score_test}: Score test statistic.
+#'           \item \code{score_test_pval}: P-value for the Score test.
+#'           \item \code{robust_score_test_pval}: P-value for the robust score test.
+#'           \item \code{exclusion_missing}: Number of observations excluded due to missingness.
+#'         }
+#'
+#' @details
+#' This function automates the process of applying multiple statistical models to a
+#' series of datasets. It iterates through each dataset in the input list, identifies
+#' potential exposure variables, and then applies each model in the 'models_heterogeneity' list.
+#' The results from each model are extracted and combined into a single data frame.
+#'
+#' The function handles potential errors during model fitting and extracts key
+#' statistics from the fitted model objects. It also provides a mechanism to specify
+#' covariates for a particular model ('model_2').
+#'
+#' @importFrom dplyr %>%
+#' @importFrom dplyr select
+#'
+#' @examples
+#' # Example usage (assuming 'my_data_list' and 'my_models' are defined)
+#' # results_df <- analysis(data_list = my_data_list, models_heterogeneity = my_models)
+#' # results_df_with_covariates <- analysis(data_list = my_data_list, models_heterogeneity = my_models, covariates = "age + sex")
+#' # print(results_df)
+#' # print(results_df_with_covariates)
+#'
+#' @export
+analysis_heterogeneity <- function(data_list, models, models_heterogeneity, heterogeneity_col, covariates = NULL) {
+  # Initialize an empty list to store results
+  results_list <- list()
+  
+  # Iterate through each dataset in the input list
+  for (i in seq_along(data_list)) {
+    dataset_name <- names(data_list[i])
+    dataset <- data_list[[i]]
+    
+    print(paste("# Analyzing:", dataset_name))
+    
+    # Iterate through potential exposure variables
+    exposure_vars <- names(dataset)[grepl("OID", names(dataset))]
+    
+    for (exposure_var in exposure_vars) {
+      # Check for missing values in exposure variable
+      if (any(!is.na(dataset[[exposure_var]]))) {
+        # Iterate through models_heterogeneity
+        for (model_name in names(models)) {
+          cat(paste0("      + ", model_name, "; exposure: ", exposure_var, "; data: ", dataset_name, "\n"))
+          
+          # Call the appropriate model function - if covariates are not provided stop 
+          if (model_name == "model_2") {
+            if (is.null(covariates) || length(covariates) == 0 || all(is.na(covariates)) || all(covariates == "")) {
+              stop("model_2 requires covariates; please provide covariates")
+            }
+            # covariates check passed, assign the covariates string
+            covariates_string <- covariates
+          }
+          
+          tryCatch({
+            if (model_name == "model_2") {
+              model_result <- models[[model_name]](dataset, exposure_var, covariates = covariates_string)
+              model_result_heterogeneity <- models_heterogeneity[["model_2_heterogeneity"]](dataset, exposure_var, heterogeneity_col = heterogeneity_col, covariates = covariates_string)
+              result_lrt <- anova(model_result, model_result_heterogeneity, test = "LRT")
+              
+            } else {
+              model_result <- models[[model_name]](dataset, exposure_var)
+              model_result_heterogeneity <- models_heterogeneity[["model_1_heterogeneity"]](dataset, exposure_var, heterogeneity_col = heterogeneity_col)
+              result_lrt <- anova(model_result, model_result_heterogeneity, test = "LRT")
+            }
+            
+            # Extract model results (using helper function)
+            result_row <- extract_model_results(model_result_heterogeneity)
+            result_row$exposure <- exposure_var
+            result_row$outcome <- strsplit(dataset_name, "_")[[1]][1]
+            result_row$sex <- strsplit(dataset_name, "_")[[1]][2]
+            result_row$model <- model_name
+            result_row$followup <- strsplit(dataset_name, "_")[[1]][3]
+            result_row$heterogeneity <- heterogeneity_col
+            
+            result_row$loglikelihood_model1 <- result_lrt$loglik[1]
+            result_row$loglikelihood_model2 <- result_lrt$loglik[2]
+            result_row$chi <- result_lrt$Chisq[2]
+            result_row$heterogeneity_p <- result_lrt$`Pr(>|Chi|)`[2]
+            
+            results_list <- append(results_list, list(result_row))
+            
+          }, error = function(e) {
+            # Handle potential errors gracefully
+            warning(paste("Error in model", model_name, "for exposure", exposure_var, ":", e$message))
+            # Add a row of NA values in case of error
+            results_list <- append(results_list, list(data.frame(
+              exposure = exposure_var,
+              outcome = strsplit(dataset_name, "_")[[1]][1],
+              sex = strsplit(dataset_name, "_")[[1]][2],
+              model = model_name,
+              followup = strsplit(dataset_name, "_")[[1]][3],
+              n = NA,
+              nevent = NA,
+              exclusion_missing = NA,
+              coef = NA,
+              coef_exp = NA,
+              se = NA,
+              ci_lower_exp = NA,
+              ci_upper_exp = NA,
+              ci_upper_exp = NA,
+              se_robust = NA,
+              pval = NA,
+              degrees_freedom = NA,
+              concordance = NA,
+              concordance_se = NA,
+              likelihood_ratio_test = NA,
+              likelihood_ratio_test_pval = NA,
+              wald_test = NA,
+              wald_test_pval = NA,
+              score_test = NA,
+              score_test_pval = NA
+              # robust_score_test_pval = NA,
+            )))
+          })
+        }
+      } else {
+        # Add a row of NA values if exposure is completely missing
+        results_list <- append(results_list, list(data.frame(
+          exposure = exposure_var,
+          outcome = strsplit(dataset_name, "_")[[1]][1],
+          sex = strsplit(dataset_name, "_")[[1]][2],
+          model = NA,
+          followup = strsplit(dataset_name, "_")[[1]][3],
+          n = NA,
+          nevent = NA,
+          exclusion_missing = NA,
+          coef = NA,
+          coef_exp = NA,
+          se = NA,
+          ci_lower_exp = NA,
+          ci_upper_exp = NA,
+          ci_upper_exp = NA,
+          se_robust = NA,
+          pval = NA,
+          degrees_freedom = NA,
+          concordance = NA,
+          concordance_se = NA,
+          likelihood_ratio_test = NA,
+          likelihood_ratio_test_pval = NA,
+          wald_test = NA,
+          wald_test_pval = NA,
+          score_test = NA,
+          # robust_score_test_pval = NA
+        )))
+      }
+    }
+  }
+  
+  # Convert the list of results to a dataframe
+  data_result <- do.call(rbind, results_list)
+  data_result <- data_result %>%
+    dplyr::select(
+      exposure, outcome, sex, model, followup,
+      everything()
+    )
+  return(data_result)
+}
+
+#' List of Statistical Models
+#'
+#' This list contains functions for fitting different statistical models.
+#'
+#' @format A list of two functions:
+#'   \describe{
+#'     \item{\code{model_1_heterogeneity}}{A function to fit a conditional logistic regression model with a specific set of covariates.}
+#'     \item{\code{model_2_heterogeneity}}{A function to fit a conditional logistic regression model with user-specified covariates.}
+#'   }
+#' @details
+#'   The functions in this list are designed to be used in epidemiological analyses,
+#'   particularly for case-control studies. They utilize the `survival::clogit`
+#'   function for conditional logistic regression.
+#'
+#' @name models_heterogeneity
+#' @rdname models_heterogeneity
+#' @export
+#'
+#' @examples
+#' # Example usage (assuming 'df' and 'exposure_var' are defined)
+#' # results_model_1 <- models_heterogeneity$model_1_heterogeneity(df = df, exposure_var = "my_exposure")
+#' # results_model_2 <- models_heterogeneity$model_2_heterogeneity(df = df, exposure_var = "my_exposure", covariates = "age + sex")
+#' # print(results_model_1)
+#' # print(results_model_2)
+#'
+models_heterogeneity <- list(
+  #' Conditional Logistic Regression Model 1
+  #'
+  #' Fits a conditional logistic regression model with a pre-defined set of covariates.
+  #'
+  #' @param df A data frame containing the data for the analysis.
+  #' @param exposure_var A character string specifying the name of the exposure variable in `df`.
+  #' @param heterogeneity_col A column to include as an interction term.
+  #' @return A fitted `clogit` model object (of class `coxph`).
+  #' @import survival
+  #' @export
+  model_1_heterogeneity = function(df, exposure_var, heterogeneity_col) {
+    formula_str <- paste0(
+      "Cncr_Caco_Clrt ~ ", exposure_var, " * ", heterogeneity_col, " + ",
+      "Fasting_C + ",
+      "day_of_year_blood_draw_sin_2_pi + ",
+      "day_of_year_blood_draw_cos_4_pi + ",
+      "day_of_year_blood_draw_sin_2_pi + ",
+      "day_of_year_blood_draw_sin_4_pi + ",
+      "survival::strata(Match_Caseset)"
+    )
+    
+    survival::clogit(
+      formula = as.formula(formula_str),
+      data = df,
+      method = "exact",
+      na.action = na.exclude
+    )
+  },
+  
+  #' Conditional Logistic Regression Model 2
+  #'
+  #' Fits a conditional logistic regression model with user-specified covariates.
+  #'
+  #' @param df A data frame containing the data for the analysis.
+  #' @param exposure_var A character string specifying the name of the exposure variable in `df`.
+  #' @param covariates A character string specifying the names of the covariates to include in the model,
+  #'                   separated by '+'. For example: "age + sex + bmi".
+  #' @param heterogeneity_col A column to include as an interction term.
+  #' @return A fitted `clogit` model object (of class `coxph`).
+  #' @import survival
+  #' @export
+  model_2_heterogeneity = function(df, exposure_var, covariates, heterogeneity_col) {
+    formula_str <- paste0(
+      "Cncr_Caco_Clrt ~ ", exposure_var, " * ", heterogeneity_col, " + ",
+      "Fasting_C + ",
+      "day_of_year_blood_draw_sin_2_pi + ",
+      "day_of_year_blood_draw_cos_4_pi + ",
+      "day_of_year_blood_draw_sin_2_pi + ",
+      "day_of_year_blood_draw_sin_4_pi + ",
+      covariates, " + ",
+      "survival::strata(Match_Caseset)"
+    )
+    
+    survival::clogit(
+      formula = as.formula(formula_str),
+      data = df,
+      method = 'exact',
+      na.action = na.exclude
+    )
+  }
+)

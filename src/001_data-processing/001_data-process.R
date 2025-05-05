@@ -2,7 +2,6 @@ rm(list=ls())
 set.seed(821)
 
 # environment ====
-library(dplyr)
 
 # data_samples ====
 data_samples <- haven::read_sas(data_file = "data/raw/EPIC_phenotype/clrt_caco.sas7bdat")

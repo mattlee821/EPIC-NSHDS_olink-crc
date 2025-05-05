@@ -2,16 +2,6 @@ rm(list=ls())
 set.seed(821)
 
 # environment ====
-library(functions)
-library(ggforestplot)
-library(ggplot2)
-library(wesanderson)
-library(data.table)
-library(dplyr)
-library(cowplot)
-
-# source ====
-palette <- palette()
 
 # data ====
 data <- data.table::fread("analysis/002_coxph/003_format/001_analysis/cancer_NormalizedSoma_PlateCorrAccountforDisease_Log10_SMP/formatted-analysis.txt")

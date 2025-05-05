@@ -2,10 +2,6 @@ rm(list=ls())
 set.seed(821)
 
 # environment ====
-# remotes::install_github("IARCBiostat/OmicsProcessing")
-library(OmicsProcessing)
-# remotes::install_github("IARCBiostat/ImputationReport")
-library(ImputationReport)
 source("src/000_functions.R")
 
 # data ====
