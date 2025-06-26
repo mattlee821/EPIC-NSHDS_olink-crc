@@ -468,7 +468,7 @@ plot_samples_exceeding_threshold <- function(
     ggplot2::geom_bar(stat = "identity", fill = "purple") +
     ggplot2::geom_text(ggplot2::aes(label = Number_of_Samples), vjust = -0.5, size = 3) +
     ggplot2::labs(
-      title = "N samples with > X% of\n samples with values < LOD",
+      title = "N samples with > X% of\n features with values < LOD",
       x = "Threshold percentage",
       y = "N samples"
     ) +
@@ -537,7 +537,7 @@ plot_samples_exceeding_threshold <- function(
 #' # print(results_df_with_covariates)
 #'
 #' @export
-analysis <- function(data_list, models, covariates = NULL) {
+analysis <- function(data_list, models, exposure, outcome_var, strata_var = NULL, base_covariates = NULL, covariates = NULL) {
   # Initialize an empty list to store results
   results_list <- list()
   
@@ -547,9 +547,18 @@ analysis <- function(data_list, models, covariates = NULL) {
     dataset <- data_list[[i]]
     
     print(paste("# Analyzing:", dataset_name))
+    exposure_vars <- names(dataset)[grepl(exposure, names(dataset))]
     
-    # Iterate through potential exposure variables
-    exposure_vars <- names(dataset)[grepl("OID", names(dataset))]
+    # Error reporting for required arguments
+    if (is.null(exposure_vars)) {
+      stop("`exposure_vars` is required but was not provided.")
+    }
+    if (is.null(outcome_var)) {
+      stop("`outcome_var` is required but was not provided.")
+    }
+    if (is.null(strata_var)) {
+      stop("`strata_var` is required but was not provided.")
+    }
     
     for (exposure_var in exposure_vars) {
       # Check for missing values in exposure variable
@@ -569,9 +578,18 @@ analysis <- function(data_list, models, covariates = NULL) {
           
           tryCatch({
             if (model_name == "model_2") {
-              model_result <- models[[model_name]](dataset, exposure_var, covariates = covariates_string)
+              model_result <- models[[model_name]](df = dataset, 
+                                                   exposure_var = exposure_var, 
+                                                   outcome_var = outcome_var,
+                                                   base_covariates = base_covariates,
+                                                   covariates = covariates_string,
+                                                   strata_var = strata_var)
             } else {
-              model_result <- models[[model_name]](dataset, exposure_var)
+              model_result <- models[[model_name]](df = dataset, 
+                                                   exposure_var = exposure_var, 
+                                                   outcome_var = outcome_var,
+                                                   base_covariates = base_covariates,
+                                                   strata_var = strata_var)
             }
             
             # Extract model results (using helper function)
@@ -652,12 +670,18 @@ analysis <- function(data_list, models, covariates = NULL) {
   }
   
   # Convert the list of results to a dataframe
-  data_result <- do.call(rbind, results_list)
-  data_result <- data_result %>%
-    dplyr::select(
-      exposure, outcome, sex, model, followup,
-      everything()
-    )
+  if (length(results_list) > 0) {
+    data_result <- do.call(rbind, results_list)
+    
+    data_result <- data_result %>%
+      dplyr::select(
+        exposure, outcome, sex, model, followup,
+        everything()
+      )
+  } else {
+    warning("No valid model results to combine. Returning NULL.")
+    data_result <- tibble::tibble()
+  }
   return(data_result)
 }
 
@@ -804,44 +828,65 @@ extract_model_results <- function(model_result) {
 #' # print(results_model_2)
 #'
 models <- list(
-  #' Conditional Logistic Regression Model 1
-  #'
-  #' Fits a conditional logistic regression model with a pre-defined set of covariates.
+  
+  #' Conditional Logistic Regression Model 1 (basic model with fixed covariates)
   #'
   #' @param df A data frame containing the data for the analysis.
+  #' @param outcome_var A character string specifying the outcome variable.
   #' @param exposure_var A character string specifying the name of the exposure variable in `df`.
+  #' @param strata_var A character string specifying the name of the strata variable for matched design.
+  #' @param base_covariates A character vector specifying the base covariates to include.
   #' @return A fitted `clogit` model object (of class `coxph`).
   #' @import survival
   #' @export
-  model_1 = function(df, exposure_var){
-    survival::clogit(Cncr_Caco_Clrt ~ get(exposure_var) +
-                       Fasting_C +
-                       day_of_year_blood_draw_sin_2_pi + day_of_year_blood_draw_cos_4_pi + day_of_year_blood_draw_sin_2_pi + day_of_year_blood_draw_sin_4_pi +
-                       survival::strata(Match_Caseset),
+  model_1 = function(df, outcome_var, exposure_var, strata_var,
+                     base_covariates){ 
+    
+    # Start with the basic formula part
+    formula_str <- paste0(outcome_var, " ~ ", exposure_var)
+    
+    # Add base_covariates if they exist
+    if (!is.null(base_covariates) && length(base_covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(base_covariates, collapse = " + "))
+    }
+    
+    # Always add strata
+    formula_str <- paste0(formula_str, " + strata(", strata_var, ")")
+    
+    survival::clogit(as.formula(formula_str),
                      data = df,
                      method = 'exact',
                      na.action = 'na.exclude')
   },
   
-  #' Conditional Logistic Regression Model 2
-  #'
-  #' Fits a conditional logistic regression model with user-specified covariates.
+  #' Conditional Logistic Regression Model 2 (user-defined covariates)
   #'
   #' @param df A data frame containing the data for the analysis.
-  #' @param exposure_var A character string specifying the name of the exposure variable in `df`.
-  #' @param covariates A character string specifying the names of the covariates to include in the model,
-  #'                   separated by '+'. For example: "age + sex + bmi".
+  #' @param outcome_var A character string specifying the outcome variable.
+  #' @param exposure_var A character string specifying the exposure variable.
+  #' @param strata_var A character string specifying the strata variable.
+  #' @param covariates A character vector specifying any covariates to include.
   #' @return A fitted `clogit` model object (of class `coxph`).
   #' @import survival
   #' @export
-  model_2 = function(df, exposure_var, covariates){
-    formula_str <- paste0(
-      "Cncr_Caco_Clrt ~ ", exposure_var, " + ",
-      "Fasting_C + ",
-      "day_of_year_blood_draw_sin_2_pi + day_of_year_blood_draw_cos_4_pi + day_of_year_blood_draw_sin_2_pi + day_of_year_blood_draw_sin_4_pi + ",
-      covariates, " + ",
-      "survival::strata(Match_Caseset)"
-    )
+  model_2 = function(df, outcome_var, exposure_var, strata_var,
+                     base_covariates, covariates){ # base_covariates and covariates can be NULL or character(0)
+    
+    # Start with the basic formula part
+    formula_str <- paste0(outcome_var, " ~ ", exposure_var)
+    
+    # Add base_covariates if they exist
+    if (!is.null(base_covariates) && length(base_covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(base_covariates, collapse = " + "))
+    }
+    
+    # Add additional covariates if they exist
+    if (!is.null(covariates) && length(covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(covariates, collapse = " + "))
+    }
+    
+    # Always add strata
+    formula_str <- paste0(formula_str, " + strata(", strata_var, ")")
     
     survival::clogit(as.formula(formula_str),
                      data = df,
@@ -849,6 +894,7 @@ models <- list(
                      na.action = 'na.exclude')
   }
 )
+
 
 #' Analyze Data with Multiple Models: allwos for interaction term
 #'
@@ -912,49 +958,80 @@ models <- list(
 #' # print(results_df_with_covariates)
 #'
 #' @export
-analysis_heterogeneity <- function(data_list, models, models_heterogeneity, heterogeneity_col, covariates = NULL) {
-  # Initialize an empty list to store results
+analysis_heterogeneity <- function(data_list, models, models_heterogeneity, heterogeneity_col,
+                                   exposure, outcome_var, strata_var = NULL, base_covariates = NULL, covariates = NULL) {
   results_list <- list()
   
-  # Iterate through each dataset in the input list
   for (i in seq_along(data_list)) {
-    dataset_name <- names(data_list[i])
+    dataset_name <- names(data_list)[i]
     dataset <- data_list[[i]]
     
     print(paste("# Analyzing:", dataset_name))
     
-    # Iterate through potential exposure variables
-    exposure_vars <- names(dataset)[grepl("OID", names(dataset))]
+    # Identify exposure variables based on pattern
+    exposure_vars <- names(dataset)[grepl(exposure, names(dataset))]
+    
+    if (is.null(exposure_vars) || length(exposure_vars) == 0) {
+      warning(paste("No exposure variables found matching pattern", exposure, "in dataset", dataset_name))
+      next
+    }
     
     for (exposure_var in exposure_vars) {
-      # Check for missing values in exposure variable
       if (any(!is.na(dataset[[exposure_var]]))) {
-        # Iterate through models_heterogeneity
+        
         for (model_name in names(models)) {
           cat(paste0("      + ", model_name, "; exposure: ", exposure_var, "; data: ", dataset_name, "\n"))
           
-          # Call the appropriate model function - if covariates are not provided stop 
+          # Check covariates for model_2
           if (model_name == "model_2") {
             if (is.null(covariates) || length(covariates) == 0 || all(is.na(covariates)) || all(covariates == "")) {
               stop("model_2 requires covariates; please provide covariates")
             }
-            # covariates check passed, assign the covariates string
             covariates_string <- covariates
           }
           
           tryCatch({
+            # Fit base model
             if (model_name == "model_2") {
-              model_result <- models[[model_name]](dataset, exposure_var, covariates = covariates_string)
-              model_result_heterogeneity <- models_heterogeneity[["model_2_heterogeneity"]](dataset, exposure_var, heterogeneity_col = heterogeneity_col, covariates = covariates_string)
-              result_lrt <- anova(model_result, model_result_heterogeneity, test = "LRT")
-              
+              model_result <- models[[model_name]](
+                df = dataset,
+                exposure_var = exposure_var,
+                outcome_var = outcome_var,
+                strata_var = strata_var,
+                base_covariates = base_covariates,
+                covariates = covariates_string
+              )
+              model_result_heterogeneity <- models_heterogeneity[[paste0(model_name, "_heterogeneity")]](
+                df = dataset,
+                exposure_var = exposure_var,
+                outcome_var = outcome_var,
+                strata_var = strata_var,
+                base_covariates = base_covariates,
+                heterogeneity_col = heterogeneity_col,
+                covariates = covariates_string
+              )
             } else {
-              model_result <- models[[model_name]](dataset, exposure_var)
-              model_result_heterogeneity <- models_heterogeneity[["model_1_heterogeneity"]](dataset, exposure_var, heterogeneity_col = heterogeneity_col)
-              result_lrt <- anova(model_result, model_result_heterogeneity, test = "LRT")
+              model_result <- models[[model_name]](
+                df = dataset,
+                exposure_var = exposure_var,
+                outcome_var = outcome_var,
+                strata_var = strata_var,
+                base_covariates = base_covariates
+              )
+              model_result_heterogeneity <- models_heterogeneity[[paste0(model_name, "_heterogeneity")]](
+                df = dataset,
+                exposure_var = exposure_var,
+                outcome_var = outcome_var,
+                strata_var = strata_var,
+                base_covariates = base_covariates,
+                heterogeneity_col = heterogeneity_col
+              )
             }
             
-            # Extract model results (using helper function)
+            # Likelihood ratio test comparing models
+            result_lrt <- anova(model_result, model_result_heterogeneity, test = "LRT")
+            
+            # Extract results from heterogeneity model
             result_row <- extract_model_results(model_result_heterogeneity)
             result_row$exposure <- exposure_var
             result_row$outcome <- strsplit(dataset_name, "_")[[1]][1]
@@ -963,6 +1040,7 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
             result_row$followup <- strsplit(dataset_name, "_")[[1]][3]
             result_row$heterogeneity <- heterogeneity_col
             
+            # Add likelihood ratio test stats
             result_row$loglikelihood_model1 <- result_lrt$loglik[1]
             result_row$loglikelihood_model2 <- result_lrt$loglik[2]
             result_row$chi <- result_lrt$Chisq[2]
@@ -971,15 +1049,14 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
             results_list <- append(results_list, list(result_row))
             
           }, error = function(e) {
-            # Handle potential errors gracefully
             warning(paste("Error in model", model_name, "for exposure", exposure_var, ":", e$message))
-            # Add a row of NA values in case of error
             results_list <- append(results_list, list(data.frame(
               exposure = exposure_var,
               outcome = strsplit(dataset_name, "_")[[1]][1],
               sex = strsplit(dataset_name, "_")[[1]][2],
               model = model_name,
               followup = strsplit(dataset_name, "_")[[1]][3],
+              heterogeneity = heterogeneity_col,
               n = NA,
               nevent = NA,
               exclusion_missing = NA,
@@ -987,7 +1064,6 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
               coef_exp = NA,
               se = NA,
               ci_lower_exp = NA,
-              ci_upper_exp = NA,
               ci_upper_exp = NA,
               se_robust = NA,
               pval = NA,
@@ -999,19 +1075,21 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
               wald_test = NA,
               wald_test_pval = NA,
               score_test = NA,
-              score_test_pval = NA
-              # robust_score_test_pval = NA,
+              heterogeneity_p = NA,
+              loglikelihood_model1 = NA,
+              loglikelihood_model2 = NA,
+              chi = NA
             )))
           })
         }
       } else {
-        # Add a row of NA values if exposure is completely missing
         results_list <- append(results_list, list(data.frame(
           exposure = exposure_var,
           outcome = strsplit(dataset_name, "_")[[1]][1],
           sex = strsplit(dataset_name, "_")[[1]][2],
           model = NA,
           followup = strsplit(dataset_name, "_")[[1]][3],
+          heterogeneity = heterogeneity_col,
           n = NA,
           nevent = NA,
           exclusion_missing = NA,
@@ -1019,7 +1097,6 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
           coef_exp = NA,
           se = NA,
           ci_lower_exp = NA,
-          ci_upper_exp = NA,
           ci_upper_exp = NA,
           se_robust = NA,
           pval = NA,
@@ -1031,19 +1108,26 @@ analysis_heterogeneity <- function(data_list, models, models_heterogeneity, hete
           wald_test = NA,
           wald_test_pval = NA,
           score_test = NA,
-          # robust_score_test_pval = NA
+          heterogeneity_p = NA,
+          loglikelihood_model1 = NA,
+          loglikelihood_model2 = NA,
+          chi = NA
         )))
       }
     }
   }
   
-  # Convert the list of results to a dataframe
-  data_result <- do.call(rbind, results_list)
-  data_result <- data_result %>%
-    dplyr::select(
-      exposure, outcome, sex, model, followup,
-      everything()
-    )
+  if (length(results_list) > 0) {
+    data_result <- do.call(rbind, results_list)
+    data_result <- data_result %>%
+      dplyr::select(
+        exposure, outcome, sex, model, followup, heterogeneity,
+        everything()
+      )
+  } else {
+    warning("No valid model results to combine. Returning NULL.")
+    data_result <- tibble::tibble()
+  }
   return(data_result)
 }
 
@@ -1083,23 +1167,24 @@ models_heterogeneity <- list(
   #' @return A fitted `clogit` model object (of class `coxph`).
   #' @import survival
   #' @export
-  model_1_heterogeneity = function(df, exposure_var, heterogeneity_col) {
-    formula_str <- paste0(
-      "Cncr_Caco_Clrt ~ ", exposure_var, " * ", heterogeneity_col, " + ",
-      "Fasting_C + ",
-      "day_of_year_blood_draw_sin_2_pi + ",
-      "day_of_year_blood_draw_cos_4_pi + ",
-      "day_of_year_blood_draw_sin_2_pi + ",
-      "day_of_year_blood_draw_sin_4_pi + ",
-      "survival::strata(Match_Caseset)"
-    )
+  model_1_heterogeneity = function(df, exposure_var, outcome_var, strata_var, heterogeneity_col,
+                                   base_covariates){ 
     
-    survival::clogit(
-      formula = as.formula(formula_str),
-      data = df,
-      method = "exact",
-      na.action = na.exclude
-    )
+    # Start with the basic formula part
+    formula_str <- paste0(outcome_var, " ~ ", exposure_var, "*", heterogeneity_col)
+    
+    # Add base_covariates if they exist
+    if (!is.null(base_covariates) && length(base_covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(base_covariates, collapse = " + "))
+    }
+    
+    # Always add strata
+    formula_str <- paste0(formula_str, " + strata(", strata_var, ")")
+    
+    survival::clogit(as.formula(formula_str),
+                     data = df,
+                     method = 'exact',
+                     na.action = 'na.exclude')
   },
   
   #' Conditional Logistic Regression Model 2
@@ -1114,23 +1199,29 @@ models_heterogeneity <- list(
   #' @return A fitted `clogit` model object (of class `coxph`).
   #' @import survival
   #' @export
-  model_2_heterogeneity = function(df, exposure_var, covariates, heterogeneity_col) {
-    formula_str <- paste0(
-      "Cncr_Caco_Clrt ~ ", exposure_var, " * ", heterogeneity_col, " + ",
-      "Fasting_C + ",
-      "day_of_year_blood_draw_sin_2_pi + ",
-      "day_of_year_blood_draw_cos_4_pi + ",
-      "day_of_year_blood_draw_sin_2_pi + ",
-      "day_of_year_blood_draw_sin_4_pi + ",
-      covariates, " + ",
-      "survival::strata(Match_Caseset)"
-    )
+  
+  model_2_heterogeneity = function(df, exposure_var, outcome_var, strata_var, heterogeneity_col,
+                                   base_covariates, covariates){ # base_covariates and covariates can be NULL or character(0)
     
-    survival::clogit(
-      formula = as.formula(formula_str),
-      data = df,
-      method = 'exact',
-      na.action = na.exclude
-    )
+    # Start with the basic formula part
+    formula_str <- paste0(outcome_var, " ~ ", exposure_var, "*", heterogeneity_col)
+    
+    # Add base_covariates if they exist
+    if (!is.null(base_covariates) && length(base_covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(base_covariates, collapse = " + "))
+    }
+    
+    # Add additional covariates if they exist
+    if (!is.null(covariates) && length(covariates) > 0) {
+      formula_str <- paste0(formula_str, " + ", paste(covariates, collapse = " + "))
+    }
+    
+    # Always add strata
+    formula_str <- paste0(formula_str, " + strata(", strata_var, ")")
+    
+    survival::clogit(as.formula(formula_str),
+                     data = df,
+                     method = 'exact',
+                     na.action = 'na.exclude')
   }
 )

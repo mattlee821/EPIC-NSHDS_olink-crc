@@ -1,371 +1,483 @@
 rm(list=ls())
 set.seed(821)
 
+# descriptive table 
+
 # environment ====
-library(dplyr)
-library(openxlsx)
-source("scripts/000_functions_epic-somalogic-data.R")
+source("src/000_source.R")
+rm(list=ls())
 
-# phenofile ====
-data_phenofile <- fread("analysis/001_phenofile/cancer_NormalizedSoma_PlateCorrAccountforDisease_Log10_SMP.txt", header = T, sep = "\t")
-phenofile_cancer <- table(data_phenofile$cncr_mal_anyc)
-phenofile_cancer_overall <- table(data_phenofile$cncr_mal_clrt)
-phenofile_cancer_colon <- table(data_phenofile$cncr_mal_clrt_colon)
-phenofile_cancer_rectum <- table(data_phenofile$cncr_mal_clrt_rectum)
+# data_raw ====
+# data_samples
+data_samples <- haven::read_sas(data_file = "data/raw/EPIC_phenotype/clrt_caco.sas7bdat")
+temp_mapping <- data_samples %>%
+  dplyr::select(Idepic_Bio) %>%
+  tidyr::extract(Idepic_Bio, into = c("prefix", "SampleID"), regex = "^([^_]+)_(.+)$", remove = FALSE) %>%
+  dplyr::mutate(SampleID = gsub("_", "", SampleID)) %>%
+  dplyr::select(-prefix)
+# data olink
+data_immuneonc <- OlinkAnalyze::read_NPX(filename = "data/raw/EPIC_olink-immuneonc/20211440_Murphy_NPX.xlsx") %>%
+  tibble::as_tibble()
+data_explore <- OlinkAnalyze::read_NPX(filename = "data/raw/EPIC_olink-explore/WL-3904_NPX_2024-12-09.csv") %>%
+  tibble::as_tibble()
+# formatting
+data_immuneonc <- data_immuneonc %>%
+  dplyr::mutate(Sample_Type = ifelse(grepl("CONTROL", SampleID), "CONTROL", "SAMPLE"))
+data_explore <- data_explore %>%
+  dplyr::mutate(Sample_Type = ifelse(SampleID == "Empty well", "CONTROL", Sample_Type)) %>%
+  dplyr::mutate(
+    SampleID = if_else(
+      Sample_Type == "SAMPLE",
+      stringr::str_pad(as.character(as.numeric(SampleID)), width = 5, pad = "0"),
+      SampleID
+    )
+  ) %>%
+  dplyr::left_join(temp_mapping, by = "SampleID") %>%
+  dplyr::mutate(SampleID = ifelse(Sample_Type == "SAMPLE", Idepic_Bio, SampleID)) %>%
+  dplyr::select(-Idepic_Bio)
+# pheno join
+data_immuneonc <- data_immuneonc %>%
+  dplyr::left_join(data_samples, by = c("SampleID" = "Idepic_Bio"))
+data_explore <- data_explore %>%
+  dplyr::left_join(data_samples, by = c("SampleID" = "Idepic_Bio"))
+# VARS
+VAR_N_immuneonc_raw <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_N_explore_raw <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_caseset_immuneonc_raw <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(Match_Caseset) %>% unique() %>% length()
+VAR_caseset_explore_raw <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(Match_Caseset) %>% unique() %>% length()
+VAR_feature_immuneonc_raw <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(OlinkID) %>% unique() %>% length()
+VAR_feature_explore_raw <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(OlinkID) %>% unique() %>% length()
 
-# processed phenofile ====
-data_phenofile_processed <- epic_somalogic_format_data(data_phenofile)
-data_phenofile_processed <- epic_somalogic_create_subtypes(data_phenofile_processed)
-data_phenofile_processed <- data_phenofile_processed[1:3]
-data_phenofile_processed <- lapply(data_phenofile_processed, epic_somalogic_create_sex)
-data_phenofile_processed <- epic_somalogic_create_analysis(data_phenofile_processed)
+# data_processed1 ====
+data_immuneonc <- data.table::fread("data/processed/EPIC_olink-immuneonc.txt")
+data_explore <- data.table::fread("data/processed/EPIC_olink-explore.txt")
+# VARS
+VAR_N_immuneonc_processed1 <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_N_explore_processed1 <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_caseset_immuneonc_processed1 <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(Match_Caseset) %>% unique() %>% length()
+VAR_caseset_explore_processed1 <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(Match_Caseset) %>% unique() %>% length()
+VAR_feature_immuneonc_processed1 <- data_immuneonc %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(OlinkID) %>% unique() %>% length()
+VAR_feature_explore_processed1 <- data_explore %>% dplyr::filter(Sample_Type == "SAMPLE") %>% dplyr::pull(OlinkID) %>% unique() %>% length()
 
-# descriptive table ====
-result_list <- list()
-for (i in names(data_phenofile_processed)){
-  
-  for (j in names(data_phenofile_processed[[i]])){
-    result_list_j <- list()
-    
-    for (k in names(data_phenofile_processed[[i]][[j]])){
-      
-      pheno_cancer <- i
-      pheno_sex <- j
-      
-      # age
-      pheno_age_median <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(age) %>%
-        median(na.rm = TRUE)
-      pheno_age_sd <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(age) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_age_median_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(age) %>%
-        median(na.rm = TRUE)
-      pheno_age_sd_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(age) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_age_median_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(age) %>%
-        median(na.rm = TRUE)
-      pheno_age_sd_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(age) %>%
-        sd(na.rm = TRUE)
-      
-      # followup
-      pheno_followup_median <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(followup) %>%
-        median(na.rm = TRUE)
-      pheno_followup_sd <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(followup) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_followup_median_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(followup) %>%
-        median(na.rm = TRUE)
-      pheno_followup_sd_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(followup) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_followup_median_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(followup) %>%
-        median(na.rm = TRUE)
-      pheno_followup_sd_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(followup) %>%
-        sd(na.rm = TRUE)
-      
-      # BMI
-      pheno_bmi_median <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(bmi_c) %>%
-        median(na.rm = TRUE)
-      pheno_bmi_sd <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(bmi_c) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_bmi_median_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(bmi_c) %>%
-        median(na.rm = TRUE)
-      pheno_bmi_sd_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(bmi_c) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_bmi_median_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(bmi_c) %>%
-        median(na.rm = TRUE)
-      pheno_bmi_sd_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(bmi_c) %>%
-        sd(na.rm = TRUE)
-      
-      # alcohol
-      pheno_alcohol_median <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(alc_re) %>%
-        median(na.rm = TRUE)
-      pheno_alcohol_sd <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(alc_re) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_alcohol_median_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(alc_re) %>%
-        median(na.rm = TRUE)
-      pheno_alcohol_sd_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(alc_re) %>%
-        sd(na.rm = TRUE)
-      
-      pheno_alcohol_median_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(alc_re) %>%
-        median(na.rm = TRUE)
-      pheno_alcohol_sd_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(alc_re) %>%
-        sd(na.rm = TRUE)
-      
-      # smoke_stat
-      pheno_smoke <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(smoke_stat) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(smoke_stat = '.', pheno_smoke = Freq)
-      pheno_smoke_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(smoke_stat) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(smoke_stat = '.', pheno_smoke_control = Freq)
-      pheno_smoke_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(smoke_stat) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(smoke_stat = '.', pheno_smoke_control = Freq)
-      
-      # pa_index
-      pheno_pa <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(pa_index) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(pa_index = '.', pheno_pa = Freq)
-      pheno_pa_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(pa_index) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(pa_index = '.', pheno_pa_control = Freq)
-      pheno_pa_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(pa_index) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(pa_index = '.', pheno_pa_case = Freq)
-      
-      # l_school
-      pheno_education <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        pull(l_school) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(l_school = '.', pheno_education = Freq)
-      pheno_education_control <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 0) %>%
-        pull(l_school) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(l_school = '.', pheno_education_control = Freq)
-      pheno_education_case <- data_phenofile_processed[[i]][[j]][[k]] %>%
-        filter(indevent == 1) %>%
-        pull(l_school) %>%
-        table() %>%
-        as.data.frame() %>%
-        rename(l_school = '.', pheno_education_case = Freq)
-      
-      # df_combined
-      df_combined <- data.frame(
-        cancer = pheno_cancer,
-        sex = pheno_sex,
-        case_status = "all",
-        n = sum(table(data_phenofile_processed[[i]][[j]][[k]]$indevent)),
-        age_median = round(pheno_age_median,2),
-        age_sd = round(pheno_age_sd,2),
-        followup_median = round(pheno_followup_median,2),
-        followup_sd = round(pheno_followup_sd,2),
-        bmi_median = round(pheno_bmi_median,2),
-        bmi_sd = round(pheno_bmi_sd,2),
-        alcohol_median = round(pheno_alcohol_median,2),
-        alcohol_sd = round(pheno_alcohol_sd,2),
-        
-        pheno_smoke[1, 2],
-        pheno_smoke[2, 2],
-        pheno_smoke[3, 2],
-        
-        pheno_pa[1, 2],
-        pheno_pa[2, 2],
-        pheno_pa[3, 2],
-        pheno_pa[4, 2],
-        pheno_pa[5, 2],
-        
-        pheno_education[1, 2],
-        pheno_education[2, 2],
-        pheno_education[3, 2],
-        pheno_education[4, 2],
-        pheno_education[5, 2],
-        pheno_education[6, 2]
-        
-      )
-      
-      names(df_combined)[13:15] <- paste0("smoke_", pheno_smoke[1:3, 1])
-      names(df_combined)[16:20] <- paste0("pa_", pheno_pa[1:5, 1])
-      names(df_combined)[21:26] <- paste0("education_", pheno_education[1:6, 1])
-      
-      # df_control
-      df_control <- data.frame(
-        cancer = pheno_cancer,
-        sex = pheno_sex,
-        case_status = "non-case",
-        n = table(data_phenofile_processed[[i]][[j]][[k]]$indevent)[1],
-        age_median = round(pheno_age_median_control,2),
-        age_sd = round(pheno_age_sd_control,2),
-        followup_median = round(pheno_followup_median_control,2),
-        followup_sd = round(pheno_followup_sd_control,2),
-        bmi_median = round(pheno_bmi_median_control,2),
-        bmi_sd = round(pheno_bmi_sd_control,2),
-        alcohol_median = round(pheno_alcohol_median_control,2),
-        alcohol_sd = round(pheno_alcohol_sd_control,2),
-        
-        pheno_smoke_control[1, 2],
-        pheno_smoke_control[2, 2],
-        pheno_smoke_control[3, 2],
-        
-        pheno_pa_control[1, 2],
-        pheno_pa_control[2, 2],
-        pheno_pa_control[3, 2],
-        pheno_pa_control[4, 2],
-        pheno_pa_control[5, 2],
-        
-        pheno_education_control[1, 2],
-        pheno_education_control[2, 2],
-        pheno_education_control[3, 2],
-        pheno_education_control[4, 2],
-        pheno_education_control[5, 2],
-        pheno_education_control[6, 2]
-        
-      )
-      
-      names(df_control)[13:15] <- paste0("smoke_", pheno_smoke_control[1:3, 1])
-      names(df_control)[16:20] <- paste0("pa_", pheno_pa_control[1:5, 1])
-      names(df_control)[21:26] <- paste0("education_", pheno_education_control[1:6, 1])
-      
-      # df_case
-      df_case <- data.frame(
-        cancer = pheno_cancer,
-        sex = pheno_sex,
-        case_status = "case",
-        n = table(data_phenofile_processed[[i]][[j]][[k]]$indevent)[2],
-        age_median = round(pheno_age_median_case,2),
-        age_sd = round(pheno_age_sd_case,2),
-        followup_median = round(pheno_followup_median_case,2),
-        followup_sd = round(pheno_followup_sd_case,2),
-        bmi_median = round(pheno_bmi_median_case,2),
-        bmi_sd = round(pheno_bmi_sd_case,2),
-        alcohol_median = round(pheno_alcohol_median_case,2),
-        alcohol_sd = round(pheno_alcohol_sd_case,2),
-        
-        pheno_smoke_case[1, 2],
-        pheno_smoke_case[2, 2],
-        pheno_smoke_case[3, 2],
-        
-        pheno_pa_case[1, 2],
-        pheno_pa_case[2, 2],
-        pheno_pa_case[3, 2],
-        pheno_pa_case[4, 2],
-        pheno_pa_case[5, 2],
-        
-        pheno_education_case[1, 2],
-        pheno_education_case[2, 2],
-        pheno_education_case[3, 2],
-        pheno_education_case[4, 2],
-        pheno_education_case[5, 2],
-        pheno_education_case[6, 2]
-        
-      )
-      
-      names(df_case)[13:15] <- paste0("smoke_", pheno_smoke_case[1:3, 1])
-      names(df_case)[16:20] <- paste0("pa_", pheno_pa_case[1:5, 1])
-      names(df_case)[21:26] <- paste0("education_", pheno_education_case[1:6, 1])
-      
-      # combine table
-      table_temp <- as.data.frame(t(rbind(df_combined, df_control, df_case)))
-      result_list_j[[k]] <- table_temp
-    }
-    result_list[[paste(i, j, sep = "_")]] <- result_list_j
-    
-  }
+# data_processed2 ====
+load("analysis/001_data-processing/EPIC_olink-immuneonc_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.rda")
+data_immuneonc <- df_processed
+load("analysis/001_data-processing/EPIC_olink-explore_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.rda")
+data_explore <- df_processed
+# VARS
+VAR_N_immuneonc_processed2 <- data_immuneonc %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_N_explore_processed2 <- data_explore %>% dplyr::pull(SampleID) %>% unique() %>% length()
+VAR_feature_immuneonc_processed2 <- sum(grepl("OID", colnames(data_immuneonc)))
+VAR_feature_explore_processed2 <- sum(grepl("OID", colnames(data_explore)))
+
+# table ====
+table_N <- data.frame(
+  data = c("immune-oncology", "explore", "immune-oncology", "explore", "immune-oncology", "explore"),
+  step = c("raw", "raw", "processed 1", "processed 1", "processed 2", "processed 2"),
+  samples = c(VAR_N_immuneonc_raw, VAR_N_explore_raw, VAR_N_immuneonc_processed1, VAR_N_explore_processed1, VAR_N_immuneonc_processed2, VAR_N_explore_processed2),
+  case_sets = c(VAR_caseset_immuneonc_raw, VAR_caseset_explore_raw, VAR_caseset_immuneonc_processed1, VAR_caseset_explore_processed1, VAR_caseset_immuneonc_processed2, VAR_caseset_explore_processed2),
+  features = c(VAR_feature_immuneonc_raw, VAR_feature_explore_raw, VAR_feature_immuneonc_processed1, VAR_feature_explore_processed1, VAR_feature_immuneonc_processed2, VAR_feature_explore_processed2)
+)
+write.table(table_N, "manuscript/tables/N-processing_epic.txt", 
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+# descriptives ====
+load("analysis/001_data-processing/EPIC_olink-immuneonc_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.rda")
+id_immuneonc_samples <- df_processed %>%
+  pull(SampleID)
+id_immuneonc_features <- colnames(df_processed)[grepl("OID", colnames(df_processed))]
+load("analysis/001_data-processing/EPIC_olink-explore_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.rda")
+id_explore_samples <- df_processed %>%
+  pull(SampleID)
+id_explore_features <- colnames(df_processed)[grepl("OID", colnames(df_processed))]
+
+data_immuneonc <- data.table::fread("data/processed/EPIC_olink-immuneonc.txt") %>%
+  filter(SampleID %in% id_immuneonc_samples) %>%
+  filter(OlinkID %in% id_immuneonc_features) %>%
+  tibble:::as_tibble()
+data_explore <- data.table::fread("data/processed/EPIC_olink-explore.txt") %>%
+  filter(SampleID %in% id_explore_samples) %>%
+  filter(OlinkID %in% id_explore_features) %>%
+  tibble:::as_tibble()
+
+# functions ====
+compute_descriptives <- function(data) {
+  data %>%
+    summarise(
+      N = n(),
+      age_median = median(Age_Recr, na.rm = TRUE),
+      age_sd = sd(Age_Recr, na.rm = TRUE),
+      followup_median = median(Agexit - Age_Recr, na.rm = TRUE),
+      followup_sd = sd(Agexit - Age_Recr, na.rm = TRUE),
+      followup_iqr = IQR(Agexit - Age_Recr, na.rm = TRUE),
+      BMI_median = median(Bmi_C, na.rm = TRUE),
+      BMI_sd = sd(Bmi_C, na.rm = TRUE),
+      alcohol_median = median(Alc_Re, na.rm = TRUE),
+      alcohol_sd = sd(Alc_Re, na.rm = TRUE)
+    )
 }
+compute_categorical <- function(data) {
+  list(
+    smoking = table(data$Smoke_Stat),
+    physical_activity = table(data$Pa_Index),
+    education = table(data$L_School)
+  )
+}
+desc_to_long <- function(df, name) {
+  df %>%
+    dplyr::ungroup() %>%                               # remove grouping metadata
+    dplyr::select(where(~ is.numeric(.x))) %>%         # keep only numeric columns
+    tidyr::pivot_longer(everything(), names_to = "statistic", values_to = name)
+}
+cat_to_long <- function(cat_list, name) {
+  dplyr::bind_rows(
+    purrr::imap(cat_list, function(tbl, var_name) {
+      as.data.frame(tbl) %>%
+        dplyr::rename(level = 1, value = Freq) %>%
+        dplyr::mutate(statistic = paste0(var_name, ": ", level)) %>%
+        dplyr::select(statistic, value)
+    })
+  ) %>%
+    dplyr::group_by(statistic) %>%
+    dplyr::summarise(!!name := value, .groups = "drop")
+}
+# immuneonc ====
+site_proximal <- c("C180", "C181", "C182", "C183", "C184", "C185")
+site_distal <- c("C186", "C187")
 
-table_0year <- c(result_list[[1]]["analysis"],
-                 result_list[[2]]["analysis"],
-                 result_list[[3]]["analysis"],
-                 result_list[[4]]["analysis"],
-                 result_list[[5]]["analysis"],
-                 result_list[[6]]["analysis"],
-                 result_list[[7]]["analysis"],
-                 result_list[[8]]["analysis"],
-                 result_list[[9]]["analysis"])
-table_0year <- bind_cols(table_0year)
+# Recode Cncr_Caco_Clrt to "Case"/"Control"
+data_phenofile <- data_immuneonc %>%
+  distinct(SampleID, .keep_all = TRUE) %>%
+  mutate(Cncr_Caco_Clrt = dplyr::recode(as.character(Cncr_Caco_Clrt),
+                                        `0` = "Control", `1` = "Case"),
+         Sex = dplyr::recode(as.character(Sex),
+                             `1` = "Male", `2` = "Female"))
 
-table_2year <- c(result_list[[1]]["followup_excl2year"],
-                 result_list[[2]]["followup_excl2year"],
-                 result_list[[3]]["followup_excl2year"],
-                 result_list[[4]]["followup_excl2year"],
-                 result_list[[5]]["followup_excl2year"],
-                 result_list[[6]]["followup_excl2year"],
-                 result_list[[7]]["followup_excl2year"],
-                 result_list[[8]]["followup_excl2year"],
-                 result_list[[9]]["followup_excl2year"])
-table_2year <- bind_cols(table_2year)
+# For all samples
+desc_all <- compute_descriptives(data_phenofile)
+cat_all <- compute_categorical(data_phenofile)
 
-table_5year <- c(result_list[[1]]["followup_excl5year"],
-                 result_list[[2]]["followup_excl5year"],
-                 result_list[[3]]["followup_excl5year"],
-                 result_list[[4]]["followup_excl5year"],
-                 result_list[[5]]["followup_excl5year"],
-                 result_list[[6]]["followup_excl5year"],
-                 result_list[[7]]["followup_excl5year"],
-                 result_list[[8]]["followup_excl5year"],
-                 result_list[[9]]["followup_excl5year"])
-table_5year <- bind_cols(table_5year)
+# By sex
+desc_by_sex <- data_phenofile %>%
+  group_by(Sex) %>%
+  group_modify(~ compute_descriptives(.x))
 
+cat_by_sex <- data_phenofile %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  setNames(paste0("Sex_", sapply(., function(x) unique(x$Sex)))) %>%
+  lapply(compute_categorical)
 
-# save ====
-write.table(table_0year, "analysis/tables/manuscript/descriptives-0year.txt", 
-            row.names = TRUE, col.names = FALSE, quote = FALSE, sep = "\t")
-write.table(table_2year, "analysis/tables/manuscript/descriptives-2year.txt", 
-            row.names = TRUE, col.names = FALSE, quote = FALSE, sep = "\t")
-write.table(table_5year, "analysis/tables/manuscript/descriptives-5year.txt", 
-            row.names = TRUE, col.names = FALSE, quote = FALSE, sep = "\t")
+# By case/control (now with Case/Control labels)
+desc_by_case <- data_phenofile %>%
+  group_by(Cncr_Caco_Clrt) %>%
+  group_modify(~ compute_descriptives(.x))
 
-wb <- createWorkbook()
-addWorksheet(wb = wb, sheetName = "all")
-writeData(wb = wb, sheet = "all", table_0year, colNames = F, rowNames = T)
+cat_by_case <- data_phenofile %>%
+  group_by(Cncr_Caco_Clrt) %>%
+  group_split() %>%
+  setNames(paste0("Case_", sapply(., function(x) unique(x$Cncr_Caco_Clrt)))) %>%
+  lapply(compute_categorical)
 
-addWorksheet(wb = wb, sheetName = "2year-fup-exclusion")
-writeData(wb = wb, sheet = "2year-fup-exclusion", table_2year, colNames = F, rowNames = T)
+# By sex and case/control
+desc_by_sex_case <- data_phenofile %>%
+  group_by(Sex, Cncr_Caco_Clrt) %>%
+  group_modify(~ compute_descriptives(.x))
 
-addWorksheet(wb = wb, sheetName = "5year-fup-exclusion")
-writeData(wb = wb, sheet = "5year-fup-exclusion", table_5year, colNames = F, rowNames = T)
+cat_by_sex_case <- data_phenofile %>%
+  group_by(Sex, Cncr_Caco_Clrt) %>%
+  group_split() %>%
+  setNames(nm = data_phenofile %>%
+             group_by(Sex, Cncr_Caco_Clrt) %>%
+             group_keys() %>%
+             mutate(name = paste0("Sex_", Sex, "_Case_", Cncr_Caco_Clrt)) %>%
+             pull(name)) %>%
+  lapply(compute_categorical)
 
-saveWorkbook(wb, "analysis/tables/manuscript/descriptives.xlsx", overwrite = TRUE)
+# Matched proximal
+proximal_cases <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Case", Siteclrt %in% site_proximal)
+
+proximal_controls <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Control", Match_Caseset %in% proximal_cases$Match_Caseset)
+
+desc_prox_cases <- compute_descriptives(proximal_cases)
+desc_prox_controls <- compute_descriptives(proximal_controls)
+cat_prox_cases <- compute_categorical(proximal_cases)
+cat_prox_controls <- compute_categorical(proximal_controls)
+
+# Matched distal
+distal_cases <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Case", Siteclrt %in% site_distal)
+
+distal_controls <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Control", Match_Caseset %in% distal_cases$Match_Caseset)
+
+desc_dist_cases <- compute_descriptives(distal_cases)
+desc_dist_controls <- compute_descriptives(distal_controls)
+cat_dist_cases <- compute_categorical(distal_cases)
+cat_dist_controls <- compute_categorical(distal_controls)
+
+# Create long dataframes
+desc_tables <- list(
+  All = desc_all,
+  Sex_Male = dplyr::filter(desc_by_sex, Sex == "Male"),
+  Sex_Female = dplyr::filter(desc_by_sex, Sex == "Female"),
+  Case = dplyr::filter(desc_by_case, Cncr_Caco_Clrt == "Case"),
+  Control = dplyr::filter(desc_by_case, Cncr_Caco_Clrt == "Control"),
+  Sex_Male_Case = dplyr::filter(desc_by_sex_case, Sex == "Male", Cncr_Caco_Clrt == "Case"),
+  Sex_Female_Case = dplyr::filter(desc_by_sex_case, Sex == "Female", Cncr_Caco_Clrt == "Case"),
+  Sex_Male_Control = dplyr::filter(desc_by_sex_case, Sex == "Male", Cncr_Caco_Clrt == "Control"),
+  Sex_Female_Control = dplyr::filter(desc_by_sex_case, Sex == "Female", Cncr_Caco_Clrt == "Control"),
+  Proximal_Case = desc_prox_cases,
+  Proximal_Control = desc_prox_controls,
+  Distal_Case = desc_dist_cases,
+  Distal_Control = desc_dist_controls
+)
+
+desc_long <- purrr::imap(desc_tables, desc_to_long) %>%
+  purrr::reduce(full_join, by = "statistic")
+
+cat_tables <- list(
+  All = cat_all,
+  Sex_Male = cat_by_sex$Sex_Male,
+  Sex_Female = cat_by_sex$Sex_Female,
+  Case = cat_by_case$Case_Case,
+  Control = cat_by_case$Case_Control,
+  Sex_Male_Case = cat_by_sex_case$Sex_Male_Case_Case,
+  Sex_Female_Case = cat_by_sex_case$Sex_Female_Case_Case,
+  Sex_Male_Control = cat_by_sex_case$Sex_Male_Case_Control,
+  Sex_Female_Control = cat_by_sex_case$Sex_Female_Case_Control,
+  Proximal_Case = cat_prox_cases,
+  Proximal_Control = cat_prox_controls,
+  Distal_Case = cat_dist_cases,
+  Distal_Control = cat_dist_controls
+)
+
+cat_long <- purrr::imap(cat_tables, cat_to_long) %>%
+  purrr::reduce(full_join, by = "statistic")
+
+# combine
+desired_order <- c(
+  "N",
+  "age_median", 
+  "age_sd", 
+  "followup_median", 
+  "followup_sd", 
+  "followup_iqr", 
+  "BMI_median", 
+  "BMI_sd", 
+  "alcohol_median", 
+  "alcohol_sd",
+  "smoking: Never",
+  "smoking: Former",
+  "smoking: Smoker",
+  "smoking: Unknown",
+  "physical_activity: Inactive",
+  "physical_activity: Moderately inactive",
+  "physical_activity: Moderately active",
+  "physical_activity: Active",
+  "physical_activity: Missing",
+  "education: None",
+  "education: Primary",
+  "education: Secondary",
+  "education: Technical/professional",
+  "education: Longer education",
+  "education: Not specified"
+)
+
+summary_table <- dplyr::bind_rows(desc_long, cat_long) %>%
+  dplyr::mutate(statistic = factor(statistic, levels = desired_order)) %>%
+  dplyr::arrange(statistic) %>%
+  dplyr::select(statistic, All, Case, Control, Sex_Male, Sex_Male_Case, Sex_Male_Control, Sex_Female, Sex_Female_Case, Sex_Female_Control, Proximal_Case, Proximal_Control, Distal_Case, Distal_Control) %>%
+  dplyr::rename_with(~ gsub("_?Sex_?|_?$", "", .x)) %>%
+  dplyr::mutate(
+    statistic = as.character(statistic),
+    dplyr::across(
+      where(is.numeric),
+      ~ case_when(
+        statistic %in% c(
+          "N",
+          "smoking: never", "smoking: former", "smoking: smoker", "smoking: unknown",
+          "physical_activity: Inactive", "physical_activity: Moderately inactive",
+          "physical_activity: Moderately active", "physical_activity: Active", "physical_activity: Missing",
+          "education: None", "education: Primary", "education: Secondary",
+          "education: Technical/professional", "education: Longer education", "education: Not specified"
+        ) ~ as.numeric(round(.x)),  # ensures no decimal
+        TRUE ~ round(.x, 2)
+      )
+    )
+  )
+
+# write
+write.table(summary_table, "manuscript/tables/descriptives_epic-immuneonc.txt", 
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+# explore ====
+site_proximal <- c("C180", "C181", "C182", "C183", "C184", "C185")
+site_distal <- c("C186", "C187")
+
+# Recode Cncr_Caco_Clrt to "Case"/"Control"
+data_phenofile <- data_explore %>%
+  distinct(SampleID, .keep_all = TRUE) %>%
+  mutate(Cncr_Caco_Clrt = dplyr::recode(as.character(Cncr_Caco_Clrt),
+                                        `0` = "Control", `1` = "Case"))
+# For all samples
+desc_all <- compute_descriptives(data_phenofile)
+cat_all <- compute_categorical(data_phenofile)
+
+# By sex
+desc_by_sex <- data_phenofile %>%
+  group_by(Sex) %>%
+  group_modify(~ compute_descriptives(.x))
+
+cat_by_sex <- data_phenofile %>%
+  group_by(Sex) %>%
+  group_split() %>%
+  setNames(paste0("Sex_", sapply(., function(x) unique(x$Sex)))) %>%
+  lapply(compute_categorical)
+
+# By case/control (now with Case/Control labels)
+desc_by_case <- data_phenofile %>%
+  group_by(Cncr_Caco_Clrt) %>%
+  group_modify(~ compute_descriptives(.x))
+
+cat_by_case <- data_phenofile %>%
+  group_by(Cncr_Caco_Clrt) %>%
+  group_split() %>%
+  setNames(paste0("Case_", sapply(., function(x) unique(x$Cncr_Caco_Clrt)))) %>%
+  lapply(compute_categorical)
+
+# By sex and case/control
+desc_by_sex_case <- data_phenofile %>%
+  group_by(Sex, Cncr_Caco_Clrt) %>%
+  group_modify(~ compute_descriptives(.x))
+
+cat_by_sex_case <- data_phenofile %>%
+  group_by(Sex, Cncr_Caco_Clrt) %>%
+  group_split() %>%
+  setNames(nm = data_phenofile %>%
+             group_by(Sex, Cncr_Caco_Clrt) %>%
+             group_keys() %>%
+             mutate(name = paste0("Sex_", Sex, "_Case_", Cncr_Caco_Clrt)) %>%
+             pull(name)) %>%
+  lapply(compute_categorical)
+
+# Matched proximal
+proximal_cases <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Case", Siteclrt %in% site_proximal)
+
+proximal_controls <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Control", Match_Caseset %in% proximal_cases$Match_Caseset)
+
+desc_prox_cases <- compute_descriptives(proximal_cases)
+desc_prox_controls <- compute_descriptives(proximal_controls)
+cat_prox_cases <- compute_categorical(proximal_cases)
+cat_prox_controls <- compute_categorical(proximal_controls)
+
+# Matched distal
+distal_cases <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Case", Siteclrt %in% site_distal)
+
+distal_controls <- data_phenofile %>%
+  filter(Cncr_Caco_Clrt == "Control", Match_Caseset %in% distal_cases$Match_Caseset)
+
+desc_dist_cases <- compute_descriptives(distal_cases)
+desc_dist_controls <- compute_descriptives(distal_controls)
+cat_dist_cases <- compute_categorical(distal_cases)
+cat_dist_controls <- compute_categorical(distal_controls)
+
+# Create long dataframes
+desc_tables <- list(
+  All = desc_all,
+  Sex_Male = dplyr::filter(desc_by_sex, Sex == "Male"),
+  Sex_Female = dplyr::filter(desc_by_sex, Sex == "Female"),
+  Case = dplyr::filter(desc_by_case, Cncr_Caco_Clrt == "Case"),
+  Control = dplyr::filter(desc_by_case, Cncr_Caco_Clrt == "Control"),
+  Sex_Male_Case = dplyr::filter(desc_by_sex_case, Sex == "Male", Cncr_Caco_Clrt == "Case"),
+  Sex_Female_Case = dplyr::filter(desc_by_sex_case, Sex == "Female", Cncr_Caco_Clrt == "Case"),
+  Sex_Male_Control = dplyr::filter(desc_by_sex_case, Sex == "Male", Cncr_Caco_Clrt == "Control"),
+  Sex_Female_Control = dplyr::filter(desc_by_sex_case, Sex == "Female", Cncr_Caco_Clrt == "Control"),
+  Proximal_Case = desc_prox_cases,
+  Proximal_Control = desc_prox_controls,
+  Distal_Case = desc_dist_cases,
+  Distal_Control = desc_dist_controls
+)
+
+desc_long <- purrr::imap(desc_tables, desc_to_long) %>%
+  purrr::reduce(full_join, by = "statistic")
+
+cat_tables <- list(
+  All = cat_all,
+  Sex_Male = cat_by_sex$Sex_Male,
+  Sex_Female = cat_by_sex$Sex_Female,
+  Case = cat_by_case$Case_Case,
+  Control = cat_by_case$Case_Control,
+  Sex_Male_Case = cat_by_sex_case$Sex_Male_Case_Case,
+  Sex_Female_Case = cat_by_sex_case$Sex_Female_Case_Case,
+  Sex_Male_Control = cat_by_sex_case$Sex_Male_Case_Control,
+  Sex_Female_Control = cat_by_sex_case$Sex_Female_Case_Control,
+  Proximal_Case = cat_prox_cases,
+  Proximal_Control = cat_prox_controls,
+  Distal_Case = cat_dist_cases,
+  Distal_Control = cat_dist_controls
+)
+
+cat_long <- purrr::imap(cat_tables, cat_to_long) %>%
+  purrr::reduce(full_join, by = "statistic")
+
+# combine
+desired_order <- c(
+  "N",
+  "age_median", 
+  "age_sd", 
+  "followup_median", 
+  "followup_sd", 
+  "followup_iqr", 
+  "BMI_median", 
+  "BMI_sd", 
+  "alcohol_median", 
+  "alcohol_sd",
+  "smoking: Never",
+  "smoking: Former",
+  "smoking: Smoker",
+  "smoking: Unknown",
+  "physical_activity: Inactive",
+  "physical_activity: Moderately inactive",
+  "physical_activity: Moderately active",
+  "physical_activity: Active",
+  "physical_activity: Missing",
+  "education: None",
+  "education: Primary",
+  "education: Secondary",
+  "education: Technical/professional",
+  "education: Longer education",
+  "education: Not specified"
+)
+
+summary_table <- dplyr::bind_rows(desc_long, cat_long) %>%
+  dplyr::mutate(statistic = factor(statistic, levels = desired_order)) %>%
+  dplyr::arrange(statistic) %>%
+  dplyr::select(statistic, All, Case, Control, Sex_Male, Sex_Male_Case, Sex_Male_Control, Sex_Female, Sex_Female_Case, Sex_Female_Control, Proximal_Case, Proximal_Control, Distal_Case, Distal_Control) %>%
+  dplyr::rename_with(~ gsub("_?Sex_?|_?$", "", .x)) %>%
+  dplyr::mutate(
+    statistic = as.character(statistic),
+    dplyr::across(
+      where(is.numeric),
+      ~ case_when(
+        statistic %in% c(
+          "N",
+          "smoking: never", "smoking: former", "smoking: smoker", "smoking: unknown",
+          "physical_activity: Inactive", "physical_activity: Moderately inactive",
+          "physical_activity: Moderately active", "physical_activity: Active", "physical_activity: Missing",
+          "education: None", "education: Primary", "education: Secondary",
+          "education: Technical/professional", "education: Longer education", "education: Not specified"
+        ) ~ as.numeric(round(.x)),  # ensures no decimal
+        TRUE ~ round(.x, 2)
+      )
+    )
+  )
+
+# write
+write.table(summary_table, "manuscript/tables/descriptives_epic-explore.txt", 
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)

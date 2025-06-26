@@ -6,8 +6,8 @@ if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 
 ## Define CRAN, GitHub, and Bioconductor packages separately
-cran_packages <- c("data.table", "dplyr", "tidyr", "survival", "ggplot2", "haven")
-github_packages <- c("NightingaleHealth/ggforestplot", "IARCBiostat/OmicsProcessing", "IARCBiostat/ImputationReport", "privefl/bigutilsr")
+cran_packages <- c("data.table", "dplyr", "tidyr", "survival", "ggplot2", "haven", "stringr", "tibble", "parallel")
+github_packages <- c("NightingaleHealth/ggforestplot", "IARCBiostat/OmicsProcessing", "IARCBiostat/ImputationReport", "privefl/bigutilsr", "Olink-Proteomics/OlinkRPackage/OlinkAnalyze")
 bioc_packages <- c("pcaMethods", "impute", "imputeLCMD")
 
 ## Install missing CRAN packages

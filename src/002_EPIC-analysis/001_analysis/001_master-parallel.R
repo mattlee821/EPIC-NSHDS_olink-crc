@@ -6,27 +6,42 @@ source("src/000_source.R")
 rm(list=ls())
 source("src/000_functions.R")
 
-# files ====
+# Files ====
 LIST_FILES <- list.files("analysis/001_data-processing/", pattern = "data-features_", all.files = T, full.names = T, recursive = T)
 
-# analysis loop ====
-for (i in LIST_FILES){
+# Analysis function ====
+process_file <- function(i) {
   VAR <- stringr::str_match(
     i,
-    ".*/(EPIC_olink-[^_]+)_(data-processed(?:_LOD-filter)?)/.*"
+    ".*/(EPIC_olink-[^/]+)_(data-processed(?:_LOD-filter)?)/.*"
   )
   
-  # data ====
+  # Data ====
   cat("Processing: \n", basename(i), "\n", sep = "")
   load(i)
+  
   data_features <- df_processed
-  data_meta_samples <- data.table::fread(paste0("data/processed/", VAR[2], ".txt")) %>%
+  
+  data_meta_samples <- data.table::fread(paste0("data/processed/", gsub(pattern = "_intersect", replacement = "", x = VAR[2]), ".txt")) %>%
     dplyr::filter(Sample_Type == "SAMPLE") %>%
     tibble::as_tibble() %>%
-    dplyr::filter(SampleID %in% data_features$SampleID) %>%
-    dplyr::select(-c(2:14)) %>%
-    unique
-  data_meta_features <- data.table::fread(paste0("analysis/001_data-processing/", VAR[2], "_metadata-within-batches.txt")) %>%
+    dplyr::filter(SampleID %in% data_features$SampleID) 
+  # Conditional column selection
+  if (grepl("explore", VAR[2], ignore.case = TRUE)) {
+    data_meta_samples <- data_meta_samples %>%
+      dplyr::select(-c(2:16)) %>%
+      unique()
+  } else if (grepl("immuneonc", VAR[2], ignore.case = TRUE)) {
+    data_meta_samples <- data_meta_samples %>%
+      dplyr::select(-c(2:14)) %>%
+      unique()
+  } else {
+    # Fallback option (optional)
+    data_meta_samples <- data_meta_samples %>%
+      unique()
+  }
+  
+  data_meta_features <- data.table::fread(paste0("analysis/001_data-processing/", gsub(pattern = "_intersect", replacement = "", x = VAR[2]), "_metadata-within-batches.txt")) %>%
     dplyr::filter(Sample_Type == "SAMPLE") %>%
     tibble::as_tibble() %>%
     dplyr::filter(SampleID %in% data_features$SampleID) %>%
@@ -36,47 +51,16 @@ for (i in LIST_FILES){
   
   # label ====
   LABEL <- basename(i) %>%
-  gsub(pattern = "\\.rda$", replacement = "")
+    gsub(pattern = "\\.rda$", replacement = "")
   cat("Processing: ", LABEL, "\n")
-
   
   # make analysis df ====
   df <- data_features %>%
-    dplyr::left_join(data_meta_samples, by = "SampleID")
-  
-  # format df ====
-  df <- df %>%
-    # make age groups
+    dplyr::left_join(data_meta_samples, by = "SampleID") %>%
     dplyr::mutate(
-      age_group = as.integer(cut(Age_Recr,
-                                 breaks = seq(0, max(Age_Recr) + 5, by = 5),
-                                 right = FALSE,
-                                 labels = seq(0, max(Age_Recr), by = 5))),
-  
-      # make day of blood draw
-      day_of_year = data.table::yday(as.Date(D_Bld_Coll, format = "%Y-%m-%d")), # Convert date of blood collection to day of year
-      ## Trigonometric transformations
-      ## Regarding adjustment for month/season of blood draw, in analyses of circulating vitamin D we have had success with spherical adjustment for day-of-year of blood draw. 
-      ## By using a (very) truncated Fourier transformation, I think we will be able to get away with four parameters for this adjustment rather than the 11 parameters needed to adjust for month. 
-      ## This also has the added bonus that the adjustment is smooth, with no artificial discontinuities from season to season or year to year.
-      day_of_year_blood_draw_sin_2_pi = sin(2 * pi * day_of_year / 365),
-      day_of_year_blood_draw_cos_2_pi = cos(2 * pi * day_of_year / 365),
-      day_of_year_blood_draw_sin_4_pi = sin(4 * pi * day_of_year / 365),
-      day_of_year_blood_draw_cos_4_pi = cos(4 * pi * day_of_year / 365),
-      
-      # covariate formatting
-      # sex: 1 = male; 2 = female
-      # smoking status: 1 = never; 2 = former; 3 = smoker; 4 = unknown
-      Smoke_Stat = as.factor(Smoke_Stat),
-      # physical activity index: 1 = inactive; 2 = moderately inactive; 3 = moderately active; 4 = active; 5 = missing
-      Pa_Index = as.factor(Pa_Index),
-      # level of schooling: 0 = none; 1 = primary; 2 = technical/professional; 3 = secondary; 4 = longer; 5 = not specified
-      L_School = as.factor(L_School)
-      
-      # factor ordering
-      # Smoke_Stat = factor(Smoke_Stat, levels = c("Never", "Former", "Smoker")),
-      # Pa_Index = factor(Pa_Index, levels = c("Inactive", "Moderately inactive", "Moderately active", "Active", "Missing")),
-      # L_School = factor(L_School, levels = c("None", "Primary school completed", "Secondary school", "Technical/professional school", "Longer education (incl. University deg.)", "Not specified"))
+      Smoke_Stat = factor(Smoke_Stat, levels = c("Never", "Former", "Smoker", "Unknown")),
+      Pa_Index = factor(Pa_Index, levels = c("Inactive", "Moderately inactive", "Moderately active", "Active", "Missing")),
+      L_School = factor(L_School, levels = c("None", "Primary", "Secondary", "Technical/professional", "Longer education", "Not specified"))
     )
   
   # make analysis list ====
@@ -370,8 +354,28 @@ for (i in LIST_FILES){
   
   # analysis ====
   list <- c(list, list_2y, list_5y)
-  data_results <- analysis(data_list = list, models = models, covariates = "Bmi_C + Alc_Re + Smoke_Stat + Pa_Index + L_School")
+  data_results <- analysis(data_list = list, models = models, 
+                           exposure = "OID", 
+                           outcome_var = "Cncr_Caco_Clrt",
+                           strata_var = "Match_Caseset", 
+                           base_covariates = "Age_Recr",
+                           covariates = "Bmi_C + Alc_Re + Smoke_Stat + Pa_Index + L_School")
   
   write.table(data_results, paste0("analysis/002_EPIC-analysis/001_analysis/", VAR[2], "_", VAR[3], "/", LABEL, ".txt"), 
-              row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t")
+              row.names = FALSE, col.names = TRUE, quote = FALSE, sep = "\t")  
 }
+
+# Parallel setup ====
+cl <- parallel::makeCluster(spec = 8)  # Create the cluster
+# Step 1: Source and load packages on each worker
+parallel::clusterEvalQ(cl, {
+  source("src/000_source.R")
+  source("src/000_functions.R")
+})
+# Step 2: Export main function
+parallel::clusterExport(cl, varlist = c("process_file"), envir = environment())
+# Step 3: Run parallel processing
+results <- parallel::parLapply(cl, LIST_FILES, process_file)
+
+# Step 4: Clean up
+stopCluster(cl)

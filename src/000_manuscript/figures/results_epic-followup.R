@@ -1,86 +1,155 @@
 rm(list=ls())
 set.seed(821)
 
+# figure 2: forestplot of FDR associations for all followup levels
+
 # environment ====
+source("src/000_source.R")
+rm(list=ls())
 
 # data ====
-data <- data.table::fread("analysis/002_coxph/003_format/001_analysis/cancer_NormalizedSoma_PlateCorrAccountforDisease_Log10_SMP/formatted-analysis.txt")
-data <- data %>%
-  filter(cancer != "earlyonset",
-         Organism == "Human") %>%
-  mutate(cancer = factor(cancer, levels = c("overall", "colon", "rectum")),
-         sex = factor(sex, levels = c("combined", "female", "male")),
-         followup = factor(followup, levels = c(0, 2, 5)),
-         raw_complete = factor(raw_complete, levels = c("raw", "complete"))) %>%
-  arrange(cancer, sex, followup, raw_complete, data_id, Target, SeqId, model_type)
-## calculate FDR_BH within cancer, sex, raw_complete, followup, model_type, Organism; for Human proteins this will give an FDR_BH for 7,335 proteins
-data <- data %>%
-  group_by(cancer, sex, raw_complete, followup, model_type, Organism) %>%
-  mutate(FDR_BH = p.adjust(p = pval, method = "BH")) %>%
-  ungroup() 
-id_associations <- data %>%
-  filter(
+data <- data.table::fread("analysis/002_EPIC-analysis/001_analysis/EPIC_olink-explore_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.txt")
+data_info <- data.table::fread("data/processed/EPIC_olink-explore.txt") %>%
+  dplyr::select(OlinkID, UniProt, Assay, Panel) %>%
+  unique() %>%
+  dplyr::filter(OlinkID %in% data$exposure)
+data_explore <- data %>%
+  dplyr::left_join(data_info, by = c("exposure"="OlinkID"))
+
+data <- data.table::fread("analysis/002_EPIC-analysis/001_analysis/EPIC_olink-immuneonc_data-processed/data-features_exclusion-feature-0.8_exclusion-sample-0.8_imputation-LOD_transformation-InvRank_outlier-TRUE_platecorrection-FALSE_centre-scale-TRUE.txt")
+data_info <- data.table::fread("data/processed/EPIC_olink-immuneonc.txt") %>%
+  dplyr::select(OlinkID, UniProt, Assay, Panel) %>%
+  unique() %>%
+  dplyr::filter(OlinkID %in% data$exposure)
+data_immuneonc <- data %>%
+  dplyr::left_join(data_info, by = c("exposure"="OlinkID"))
+
+# plot: immuneonc ====
+data_plot <- data_immuneonc %>%
+  dplyr::mutate(
+    outcome = factor(outcome, levels = c("overall", "proximal", "distal")),
+    sex = factor(sex, levels = c("combined", "female", "male")),
+    followup = factor(followup, levels = c(0, 2, 5)),
+    coef_exp = as.numeric(coef_exp)
+  ) %>%
+  dplyr::arrange(exposure, outcome, sex, followup, model) %>%
+  dplyr::group_by(exposure, outcome, sex, followup, model) %>%
+  dplyr::mutate(FDR_BH = p.adjust(p = pval, method = "BH")) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(model == "model_2")
+
+id_associations <- data_plot %>%
+  dplyr::filter(
     followup == 0,
-    raw_complete == "raw",
-    model_type == "model_2_extra",
+    model == "model_2",
     FDR_BH < 0.05
   ) %>%
-  select(exposure, cancer, sex) %>%
-  mutate(id = paste(exposure, ";", cancer, ";", sex)) %>%
-  pull(id)
+  dplyr::select(exposure, outcome, sex) %>%
+  dplyr::mutate(id = paste0(exposure, ";", outcome, ";", sex)) %>%
+  dplyr::pull(id)
 
-## data_plot
-data_plot <- data %>%
-  filter(
-    raw_complete == "raw",
-    model_type == "model_2_extra",
-  ) %>%
-  mutate(id = paste(exposure, ";", cancer, ";", sex)) %>%
-  filter(id %in% id_associations,
-         sex == "combined")
+data_plot <- data_plot %>%
+  dplyr::mutate(id = paste0(exposure, ";", outcome, ";", sex)) %>%
+  dplyr::filter(id %in% id_associations)
 
-## plot ====
-list_plots <- lapply(split(data_plot, list(data_plot$cancer, data_plot$sex), drop = TRUE), function(sub_data) {
-  cancer_level <- unique(sub_data$cancer)
-  sex_level <- unique(sub_data$sex)
+## plot
+combinations <- expand.grid(
+  outcome = unique(data_plot$outcome),
+  sex = unique(data_plot$sex),
+  stringsAsFactors = FALSE
+)
+
+## plot
+purrr::walk2(combinations$outcome, combinations$sex, function(cancer_level, sex_level) {
   
+  # Filter data for this combination
+  sub_data <- data_plot %>%
+    dplyr::filter(outcome == cancer_level, sex == sex_level) %>%
+    dplyr::arrange(Assay)
+  
+  # Generate the forest plot
   p <- functions::forestplot(df = sub_data, 
-                             name = Target, 
+                             name = Assay, 
                              estimate = coef, 
-                             se = se_robust, 
+                             se = se, 
                              pvalue = FDR_BH, 
                              colour = followup, 
-                             logodds = T, 
+                             logodds = TRUE, 
                              psignif = 0.05, 
                              ci = 0.95) +
-    labs(title = paste(cancer_level),
-         colour = "study", shape = "method") +
-    xlab("Hazard ratio (95% confidence interval)") +
-    theme(legend.position = "none")  # Remove legend from individual plots
+    ggplot2::labs(title = paste0(cancer_level, ";", sex_level),
+                  colour = "study", shape = "method") +
+    ggplot2::xlab("Odds ratio (95% confidence interval)") +
+    ggplot2::theme(legend.position = "bottom")
   
-  return(p)
+  # Save the plot
+  outfile <- paste0("manuscript/figures/followup/epic-immuneonc_", cancer_level, "_", sex_level, ".tiff")
+  tiff(outfile, width = 1000, height = 1000, units = "px")
+  print(p)
+  dev.off()
 })
 
-# Extract legend from one of the plots (using the first non-null plot)
-legend_plot <- functions::forestplot(df = data_plot, 
-                                     name = Target, 
-                                     estimate = coef, 
-                                     se = se_robust, 
-                                     pvalue = FDR_BH, 
-                                     colour = followup, 
-                                     logodds = T, 
-                                     psignif = 0.05, 
-                                     ci = 0.95) +
-  labs(colour = "followup exclusion") +
-  xlab("Hazard ratio (95% confidence interval)") +
-  theme(legend.position = "right")
-legend <- cowplot::get_legend(legend_plot)  # Extract legend
-# Arrange plots in a grid with the legend at the bottom
-plot <- plot_grid(plotlist = list_plots, ncol = 3)
-plot <- plot_grid(plot, legend, ncol = 2, rel_widths = c(1, 0.2))
+# plot: explore ====
+data_plot <- data_explore %>%
+  dplyr::mutate(
+    outcome = factor(outcome, levels = c("overall", "proximal", "distal")),
+    sex = factor(sex, levels = c("combined", "female", "male")),
+    followup = factor(followup, levels = c(0, 2, 5)),
+    coef_exp = as.numeric(coef_exp)
+  ) %>%
+  dplyr::arrange(exposure, outcome, sex, followup, model) %>%
+  dplyr::group_by(exposure, outcome, sex, followup, model) %>%
+  dplyr::mutate(FDR_BH = p.adjust(p = pval, method = "BH")) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(model == "model_2")
 
-## save
-tiff("analysis/figures/manuscript/results-epic-followup.tiff", 
-     width = 1600, height = 800, units = "px")
-plot
-dev.off()
+id_associations <- data_plot %>%
+  dplyr::filter(
+    followup == 0,
+    model == "model_2",
+    FDR_BH < 0.05
+  ) %>%
+  dplyr::select(exposure, outcome, sex) %>%
+  dplyr::mutate(id = paste0(exposure, ";", outcome, ";", sex)) %>%
+  dplyr::pull(id)
+
+data_plot <- data_plot %>%
+  dplyr::mutate(id = paste0(exposure, ";", outcome, ";", sex)) %>%
+  dplyr::filter(id %in% id_associations)
+
+combinations <- expand.grid(
+  outcome = unique(data_plot$outcome),
+  sex = unique(data_plot$sex),
+  stringsAsFactors = FALSE
+)
+
+## plot
+purrr::walk2(combinations$outcome, combinations$sex, function(cancer_level, sex_level) {
+  
+  # Filter data for this combination
+  sub_data <- data_plot %>%
+    dplyr::filter(outcome == cancer_level, sex == sex_level) %>%
+    dplyr::arrange(Assay)
+  
+  # Generate the forest plot
+  p <- functions::forestplot(df = sub_data, 
+                             name = Assay, 
+                             estimate = coef, 
+                             se = se, 
+                             pvalue = FDR_BH, 
+                             colour = followup, 
+                             logodds = TRUE, 
+                             psignif = 0.05, 
+                             ci = 0.95) +
+    ggplot2::labs(title = paste0(cancer_level, ";", sex_level),
+         colour = "study", shape = "method") +
+    ggplot2::xlab("Odds ratio (95% confidence interval)") +
+    ggplot2::theme(legend.position = "bottom")
+  
+  # Save the plot
+  outfile <- paste0("manuscript/figures/followup/epic-explore_", cancer_level, "_", sex_level, ".tiff")
+  tiff(outfile, width = 1000, height = 1000, units = "px")
+  print(p)
+  dev.off()
+})
+
